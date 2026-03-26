@@ -1,0 +1,80 @@
+spring:
+  # 数据源配置
+  datasource:
+    url: jdbc:mysql://localhost:3306/zhilian_ticket?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai
+    username: root
+    password: 123456
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+  # Redis配置
+  redis:
+    host: 192.168.100.146
+    port: 6379
+#    password:
+    database: 0
+    timeout: 3000
+
+  # Redisson配置
+  redisson:
+    timeout: 3000
+    retryAttempts: 3
+    retryInterval: 1000
+    singleServerConfig:
+      connectTimeout: 3000
+      timeout: 3000
+      retryAttempts: 3
+      retryInterval: 1000
+
+  # RabbitMQ配置
+  rabbitmq:
+    host: 192.168.100.146
+    port: 5672
+    username: admin
+    password: 123456
+    virtual-host: /
+
+  # 验证码配置
+  aj:
+    captcha:
+      type: default
+
+# MyBatis-Plus配置
+mybatis-plus:
+  mapper-locations: classpath*:mapper/**/*.xml
+  type-aliases-package: com.zhilian.*.entity
+  configuration:
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+
+# 服务器配置
+server:
+  port: 8080
+  servlet:
+    context-path: /
+
+# 日志配置
+logging:
+  config: classpath:log4j2.xml
+
+# Knife4j配置
+knife4j:
+  enable: true
+  setting:
+    language: zh_cn
+  production: false
+
+# 自定义配置
+zhilian:
+  jwt:
+    secret: zhilian_ticket_secret_key
+    expire: 86400
+  security:
+    ignore:
+      urls:
+        - /api/user/login
+        - /api/user/register
+        - /api/captcha/**
+        - /api/monitor/health
+        - /doc.html
+        - /webjars/**
+        - /swagger-resources/**
+        - /v2/api-docs
