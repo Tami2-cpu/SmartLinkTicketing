@@ -7,6 +7,12 @@ import com.baomidou.mybatisplus.annotation.TableName;
 import java.math.BigDecimal;
 import java.util.Date;
 
+/**
+ * 订单实体
+ * 
+ * @author 智联票务技术团队
+ * @date 2026-04-01
+ */
 @TableName("order")
 public class Order {
     @TableId(type = IdType.AUTO)
@@ -18,6 +24,8 @@ public class Order {
     private Integer status;
     private Integer payType;
     private Date payTime;
+    private Date cancelTime;
+    private Date closeTime;
     private Date createTime;
     private Date updateTime;
 
@@ -83,6 +91,22 @@ public class Order {
 
     public void setPayTime(Date payTime) {
         this.payTime = payTime;
+    }
+
+    public Date getCancelTime() {
+        return cancelTime;
+    }
+
+    public void setCancelTime(Date cancelTime) {
+        this.cancelTime = cancelTime;
+    }
+
+    public Date getCloseTime() {
+        return closeTime;
+    }
+
+    public void setCloseTime(Date closeTime) {
+        this.closeTime = closeTime;
     }
 
     public Date getCreateTime() {

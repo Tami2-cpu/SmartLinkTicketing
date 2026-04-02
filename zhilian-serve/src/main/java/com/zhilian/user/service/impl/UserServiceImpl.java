@@ -2,7 +2,11 @@ package com.zhilian.user.service.impl;
 
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zhilian.core.bloomfilter.BloomFilterHandler;
+import com.zhilian.core.composite.CompositeContainer;
 import com.zhilian.core.exception.BusinessException;
+import com.zhilian.core.lock.LockType;
+import com.zhilian.core.lock.ServiceLock;
 import com.zhilian.user.dto.UserLoginDTO;
 import com.zhilian.user.dto.UserRegisterDTO;
 import com.zhilian.user.entity.User;
@@ -12,6 +16,8 @@ import com.zhilian.user.vo.UserVO;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.RequestBody;
 
 import com.zhilian.core.constants.UserConstants;
@@ -38,6 +44,16 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
 
     private final BCryptPasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
 
+    private static final Integer ERROR_COUNT_THRESHOLD = 5;
+
+    private static final Logger logger = LoggerFactory.getLogger(UserServiceImpl.class);
+
+    @Resource
+    private BloomFilterHandler bloomFilterHandler;
+
+    @Resource
+    private CompositeContainer compositeContainer;
+
     /**
      * 用户注册
      * 
@@ -45,19 +61,10 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
      * @return 注册后的用户信息
      */
     @Override
+    @ServiceLock(lockType = LockType.Write, name = "register_user_lock", keys = { "#userDTO.mobile" })
     public UserVO register(UserRegisterDTO userDTO) {
-        // 检查用户名是否已存在
-        if (getByUsername(userDTO.getUsername()) != null) {
-            throw BusinessException.badRequest("用户名已存在");
-        }
-        // 检查手机号是否已存在
-        if (getByMobile(userDTO.getMobile()) != null) {
-            throw BusinessException.badRequest("手机号已存在");
-        }
-        // 检查邮箱是否已存在
-        if (userDTO.getEmail() != null && getByEmail(userDTO.getEmail()) != null) {
-            throw BusinessException.badRequest("邮箱已存在");
-        }
+        // 执行复合校验
+        compositeContainer.execute(userDTO);
 
         // 创建用户实体
         User user = new User();
@@ -71,6 +78,11 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         // 保存用户
         save(user);
 
+        // 将手机号添加到布隆过滤器
+        if (user.getMobile() != null) {
+            bloomFilterHandler.add(user.getMobile());
+        }
+
         // 转换为VO
         return convertToVO(user);
     }
@@ -83,16 +95,37 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
      */
     @Override
     public UserVO login(UserLoginDTO userLoginDTO) {
-        User user = getByUsername(userLoginDTO.getUsername());
+        String username = userLoginDTO.getUsername();
+
+        // 检查登录错误次数
+        String errorCountKey = "login_error_count:" + username;
+        Object errorCountObj = redisTemplate.opsForValue().get(errorCountKey);
+        if (errorCountObj != null) {
+            int errorCount = Integer.parseInt(errorCountObj.toString());
+            if (errorCount >= ERROR_COUNT_THRESHOLD) {
+                throw BusinessException.unauthorized("登录错误次数过多，请稍后重试");
+            }
+        }
+
+        User user = getByUsername(username);
         if (user == null) {
+            // 记录错误次数
+            redisTemplate.opsForValue().increment(errorCountKey);
+            redisTemplate.expire(errorCountKey, 1, java.util.concurrent.TimeUnit.MINUTES);
             throw BusinessException.unauthorized("用户名或密码错误");
         }
         if (!passwordEncoder.matches(userLoginDTO.getPassword(), user.getPassword())) {
+            // 记录错误次数
+            redisTemplate.opsForValue().increment(errorCountKey);
+            redisTemplate.expire(errorCountKey, 1, java.util.concurrent.TimeUnit.MINUTES);
             throw BusinessException.unauthorized("用户名或密码错误");
         }
         if (user.getStatus() != null && user.getStatus() == 0) {
             throw BusinessException.forbidden("账号已被禁用");
         }
+
+        // 登录成功，清除错误次数
+        redisTemplate.delete(errorCountKey);
 
         // 转换为VO
         return convertToVO(user);
@@ -137,6 +170,11 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
      */
     @Override
     public User getByMobile(String mobile) {
+        // 先从布隆过滤器检查是否存在
+        if (!bloomFilterHandler.contains(mobile)) {
+            return null;
+        }
+
         // 先从缓存获取
         String cacheKey = UserConstants.USER_MOBILE_PREFIX + mobile;
         User user = getFromCache(cacheKey);
@@ -312,6 +350,110 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         return convertToVO(user);
     }
 
+    @Override
+    public void updatePassword(Long userId, String oldPassword, String newPassword) {
+        User user = getById(userId);
+        if (user == null) {
+            throw BusinessException.notFound("用户不存在");
+        }
+
+        // 验证旧密码
+        if (!passwordEncoder.matches(oldPassword, user.getPassword())) {
+            throw BusinessException.badRequest("旧密码错误");
+        }
+
+        // 更新密码
+        user.setPassword(passwordEncoder.encode(newPassword));
+        updateById(user);
+
+        // 清理缓存
+        clearUserCache(user.getId(), user.getUsername(), user.getMobile(), user.getEmail());
+    }
+
+    @Override
+    public void updateEmail(Long userId, String email) {
+        User user = getById(userId);
+        if (user == null) {
+            throw BusinessException.notFound("用户不存在");
+        }
+
+        // 检查邮箱是否已被使用
+        if (getByEmail(email) != null) {
+            throw BusinessException.badRequest("邮箱已被使用");
+        }
+
+        // 保存旧值用于缓存清理
+        String oldEmail = user.getEmail();
+
+        // 更新邮箱
+        user.setEmail(email);
+        updateById(user);
+
+        // 清理旧缓存
+        clearUserCache(user.getId(), user.getUsername(), user.getMobile(), oldEmail);
+
+        // 存入新缓存
+        putUserToCache(user);
+    }
+
+    @Override
+    public void updateMobile(Long userId, String mobile) {
+        User user = getById(userId);
+        if (user == null) {
+            throw BusinessException.notFound("用户不存在");
+        }
+
+        // 检查手机号是否已被使用
+        if (getByMobile(mobile) != null) {
+            throw BusinessException.badRequest("手机号已被使用");
+        }
+
+        // 保存旧值用于缓存清理
+        String oldMobile = user.getMobile();
+
+        // 更新手机号
+        user.setMobile(mobile);
+        updateById(user);
+
+        // 清理旧缓存
+        clearUserCache(user.getId(), user.getUsername(), oldMobile, user.getEmail());
+
+        // 存入新缓存
+        putUserToCache(user);
+
+        // 更新布隆过滤器
+        if (oldMobile != null) {
+            // 注意：布隆过滤器不支持删除操作，这里只添加新手机号
+        }
+        bloomFilterHandler.add(mobile);
+    }
+
+    @Override
+    public void submitAuthentication(Long userId, String realName, String idCard) {
+        User user = getById(userId);
+        if (user == null) {
+            throw BusinessException.notFound("用户不存在");
+        }
+
+        // 验证身份证号码格式
+        if (!idCard
+                .matches("^[1-9][0-9]{5}(18|19|20)[0-9]{2}(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])[0-9]{3}[0-9Xx]$") ){
+            throw BusinessException.badRequest("身份证号码格式错误");
+        }
+
+        // 清理缓存
+        clearUserCache(user.getId(), user.getUsername(), user.getMobile(), user.getEmail());
+    }
+
+    @Override
+    public Integer getAuthStatus(Long userId) {
+        User user = getById(userId);
+        if (user == null) {
+            throw BusinessException.notFound("用户不存在");
+        }
+        return 0; // 默认返回0，表示未认证
+    }
+
     /**
      * 生成随机验证码
      * 
@@ -362,7 +504,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
             }
         } catch (Exception e) {
             // 缓存读取失败，返回null，从数据库查询
-            e.printStackTrace();
+            logger.error("从缓存获取用户信息失败: {}", e.getMessage(), e);
         }
         return null;
     }
@@ -378,7 +520,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
             redisTemplate.opsForValue().set(key, user, UserConstants.CACHE_EXPIRATION, TimeUnit.SECONDS);
         } catch (Exception e) {
             // 缓存写入失败，忽略异常
-            e.printStackTrace();
+            logger.error("将用户信息存入缓存失败: {}", e.getMessage(), e);
         }
     }
 
@@ -402,7 +544,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
             }
         } catch (Exception e) {
             // 缓存清理失败，忽略异常
-            e.printStackTrace();
+            logger.error("清理用户缓存失败: {}", e.getMessage(), e);
         }
     }
 

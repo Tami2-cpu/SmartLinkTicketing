@@ -4,12 +4,13 @@ import java.math.BigDecimal;
 import java.util.Date;
 
 /**
- * 订单明细返回VO
+ * 订单明细VO
  * 
  * @author 智联票务技术团队
- * @date 2026-03-24
+ * @date 2026-04-01
  */
 public class OrderItemVO {
+
     private Long id;
     private Long orderId;
     private Long buyerId;

@@ -8,14 +8,27 @@ import com.zhilian.order.entity.OrderItem;
 import com.zhilian.order.mapper.OrderItemMapper;
 import com.zhilian.order.mapper.OrderMapper;
 import com.zhilian.order.service.OrderService;
+import com.zhilian.order.vo.OrderDetailVO;
+import com.zhilian.order.vo.OrderItemVO;
+import com.zhilian.order.vo.OrderListVO;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
+import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.Resource;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.UUID;
 
+/**
+ * 订单服务实现
+ * 
+ * @author 智联票务技术团队
+ * @date 2026-04-01
+ */
 @Service
 public class OrderServiceImpl extends ServiceImpl<OrderMapper, Order> implements OrderService {
 
@@ -25,8 +38,11 @@ public class OrderServiceImpl extends ServiceImpl<OrderMapper, Order> implements
   @Resource
   private OrderItemMapper orderItemMapper;
 
+  @Resource
+  private RedissonClient redissonClient;
+
   @Override
-  @Transactional
+  @Transactional(rollbackFor = Exception.class)
   public Order createOrder(Order order, List<OrderItem> items) {
     // 生成订单号
     String orderNo = generateOrderNo();
@@ -49,6 +65,7 @@ public class OrderServiceImpl extends ServiceImpl<OrderMapper, Order> implements
   }
 
   @Override
+  @Transactional(rollbackFor = Exception.class)
   public Order payOrder(Long orderId, Integer payType) {
     Order order = getById(orderId);
     if (order == null) {
@@ -64,10 +81,14 @@ public class OrderServiceImpl extends ServiceImpl<OrderMapper, Order> implements
     order.setUpdateTime(new Date());
     updateById(order);
 
+    // 更新订单相关数据
+    updateOrderRelatedData(order.getOrderNo(), order.getStatus());
+
     return order;
   }
 
   @Override
+  @Transactional(rollbackFor = Exception.class)
   public Order cancelOrder(Long orderId) {
     Order order = getById(orderId);
     if (order == null) {
@@ -78,13 +99,18 @@ public class OrderServiceImpl extends ServiceImpl<OrderMapper, Order> implements
     }
 
     order.setStatus(2); // 已取消
+    order.setCancelTime(new Date());
     order.setUpdateTime(new Date());
     updateById(order);
+
+    // 更新订单相关数据
+    updateOrderRelatedData(order.getOrderNo(), order.getStatus());
 
     return order;
   }
 
   @Override
+  @Transactional(rollbackFor = Exception.class)
   public Order closeOrder(Long orderId) {
     Order order = getById(orderId);
     if (order == null) {
@@ -92,15 +118,31 @@ public class OrderServiceImpl extends ServiceImpl<OrderMapper, Order> implements
     }
 
     order.setStatus(3); // 已关闭
+    order.setCloseTime(new Date());
     order.setUpdateTime(new Date());
     updateById(order);
+
+    // 更新订单相关数据
+    updateOrderRelatedData(order.getOrderNo(), order.getStatus());
 
     return order;
   }
 
   @Override
-  public List<Order> getOrderList(Long userId) {
-    return lambdaQuery().eq(Order::getUserId, userId).list();
+  public List<OrderListVO> getOrderList(Long userId) {
+    List<Order> orders = lambdaQuery().eq(Order::getUserId, userId).list();
+    List<OrderListVO> orderListVOs = new ArrayList<>();
+    for (Order order : orders) {
+      OrderListVO orderListVO = new OrderListVO();
+      BeanUtils.copyProperties(order, orderListVO);
+      // 计算订单中的票数
+      int ticketCount = 0;
+      List<OrderItem> orderItems = getOrderItems(order.getId());
+      ticketCount = orderItems.size();
+      orderListVO.setTicketCount(ticketCount);
+      orderListVOs.add(orderListVO);
+    }
+    return orderListVOs;
   }
 
   @Override
@@ -113,6 +155,61 @@ public class OrderServiceImpl extends ServiceImpl<OrderMapper, Order> implements
     QueryWrapper<OrderItem> queryWrapper = new QueryWrapper<>();
     queryWrapper.eq("order_id", orderId);
     return orderItemMapper.selectList(queryWrapper);
+  }
+
+  @Override
+  public OrderDetailVO getOrderDetail(Long orderId) {
+    Order order = getById(orderId);
+    if (order == null) {
+      return null;
+    }
+    OrderDetailVO orderDetailVO = new OrderDetailVO();
+    BeanUtils.copyProperties(order, orderDetailVO);
+    // 转换订单明细
+    List<OrderItem> orderItems = getOrderItems(orderId);
+    List<OrderItemVO> orderItemVOs = new ArrayList<>();
+    for (OrderItem item : orderItems) {
+      OrderItemVO orderItemVO = new OrderItemVO();
+      BeanUtils.copyProperties(item, orderItemVO);
+      orderItemVOs.add(orderItemVO);
+    }
+    orderDetailVO.setOrderItems(orderItemVOs);
+    return orderDetailVO;
+  }
+
+  @Override
+  @Transactional(rollbackFor = Exception.class)
+  public boolean initiateCancel(Long orderId) {
+    // 分布式锁
+    RLock lock = redissonClient.getLock("order:cancel:" + orderId);
+    try {
+      if (lock.tryLock()) {
+        Order order = getById(orderId);
+        if (order != null && order.getStatus() == 0) {
+          order.setStatus(2); // 已取消
+          order.setCancelTime(new Date());
+          order.setUpdateTime(new Date());
+          updateById(order);
+          // 更新订单相关数据
+          updateOrderRelatedData(order.getOrderNo(), order.getStatus());
+          return true;
+        }
+      }
+    } finally {
+      if (lock.isHeldByCurrentThread()) {
+        lock.unlock();
+      }
+    }
+    return false;
+  }
+
+  @Override
+  public void updateOrderRelatedData(String orderNumber, Integer orderStatus) {
+    // 这里可以实现订单状态变更后的相关操作，例如：
+    // 1. 更新缓存中的订单状态
+    // 2. 发送订单状态变更通知
+    // 3. 处理订单相关的业务逻辑
+    // 暂时为空实现
   }
 
   private String generateOrderNo() {

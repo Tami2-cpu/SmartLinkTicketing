@@ -16,6 +16,9 @@ public class UserVO {
     private String email;
     private String avatar;
     private Integer status;
+    private String realName;
+    private String idCard;
+    private Integer authStatus;
     private Date createTime;
     private Date updateTime;
 
@@ -90,5 +93,29 @@ public class UserVO {
 
     public void setUpdateTime(Date updateTime) {
         this.updateTime = updateTime;
+    }
+
+    public String getRealName() {
+        return realName;
+    }
+
+    public void setRealName(String realName) {
+        this.realName = realName;
+    }
+
+    public String getIdCard() {
+        return idCard;
+    }
+
+    public void setIdCard(String idCard) {
+        this.idCard = idCard;
+    }
+
+    public Integer getAuthStatus() {
+        return authStatus;
+    }
+
+    public void setAuthStatus(Integer authStatus) {
+        this.authStatus = authStatus;
     }
 }

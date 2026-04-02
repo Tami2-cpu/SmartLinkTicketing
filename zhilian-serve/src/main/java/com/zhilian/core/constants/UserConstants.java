@@ -42,4 +42,18 @@ public class UserConstants {
 
     // 验证码长度
     public static final int VERIFICATION_CODE_LENGTH = 6;
+    
+    // 购票人相关
+    public static final String TICKET_USER_PREFIX = "ticket:user:";
+    public static final String USER_TICKET_USERS_PREFIX = "user:ticket:users:";
+    
+    // 布隆过滤器相关
+    public static final String USER_MOBILE_BLOOM_FILTER = "user:mobile:bloom:filter";
+    public static final long BLOOM_FILTER_EXPECTED_ELEMENTS = 1000000;
+    public static final double BLOOM_FILTER_FPP = 0.01;
+    
+    // 分布式锁相关
+    public static final String REGISTER_USER_LOCK = "lock:register:user";
+    public static final long LOCK_EXPIRE_TIME = 30; // 锁过期时间（秒）
+    public static final long LOCK_WAIT_TIME = 10; // 等待获取锁的时间（秒）
 }
